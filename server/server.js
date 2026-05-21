@@ -4,7 +4,9 @@ const multer = require("multer");
 const fs = require("fs");
 const pdfParse = require("pdf-parse");
 const axios = require("axios");
-require("dotenv").config();
+
+// ✅ Load .env correctly (IMPORTANT)
+require("dotenv").config({ path: __dirname + "/.env" });
 
 const app = express();
 
@@ -17,66 +19,73 @@ const upload = multer({ dest: "uploads/" });
 // 📤 Upload route
 app.post("/upload", upload.single("resume"), async (req, res) => {
   try {
+    // ✅ Check file exists
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
     // 📄 Read PDF
     const dataBuffer = fs.readFileSync(req.file.path);
     const pdfData = await pdfParse(dataBuffer);
 
     const resumeText = pdfData.text.substring(0, 3000);
 
-    // 🤖 Gemini API Call
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+    // 🤖 Gemini API Call (FIXED MODEL)
+
+const response = await axios.post(
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+  {
+    contents: [
       {
-        contents: [
+        parts: [
           {
-            parts: [
-              {
-                text: `
-Analyze this resume and return ONLY JSON format:
-
-{
-  "score": number (0-100),
-  "skills": [],
-  "missing_skills": [],
-  "suggestions": []
-}
-
-Resume:
-${resumeText}
-                `,
-              },
-            ],
+            text: `Analyze this resume and return JSON with score, skills, missing_skills, suggestions:\n\n${resumeText}`,
           },
         ],
-      }
-    );
+      },
+    ],
+  }
+);
 
-    // 📦 Extract AI response
+    // 📦 Extract AI response safely
     const aiText =
-      response.data.candidates[0].content.parts[0].text;
+      response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    // 🧹 Clean JSON (remove ``` if present)
+    if (!aiText) {
+      throw new Error("No response from Gemini API");
+    }
+
+    // 🧹 Clean JSON
     const cleaned = aiText.replace(/```json|```/g, "").trim();
 
     let result;
+
     try {
       result = JSON.parse(cleaned);
     } catch (e) {
-      result = { raw: cleaned }; // fallback if parsing fails
+      console.log("JSON parse failed 👉", cleaned);
+
+      result = {
+        score: 50,
+        skills: [],
+        missing_skills: [],
+        suggestions: ["AI response parsing failed"],
+      };
     }
 
-    // 📤 Send to frontend
+    // 📤 Send response
     res.json({
       message: "Analysis complete",
       result: result,
     });
 
   } catch (error) {
-    console.error("ERROR 👉", error.message);
+    // ✅ FULL ERROR LOG (VERY IMPORTANT)
+    console.error("FULL ERROR 👉", error.response?.data || error.message);
 
     res.status(500).json({
       error: "Something went wrong",
-      details: error.message,
+      details: error.response?.data || error.message,
     });
   }
 });
